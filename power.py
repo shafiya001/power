@@ -3,161 +3,107 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 
-def compute_series_impedance(R, L, C_series, f):
-    """Compute series reactances and impedance (Z = R + j(XL - XC))."""
-    omega = 2 * np.pi * f
-    X_L = omega * L
-    X_C_series = 1/(omega * C_series) if C_series and C_series > 0 else 0.0
-    X_net = X_L - X_C_series
-    Z_mag = np.sqrt(R**2 + X_net**2)
-    phi = np.arctan2(X_net, R)
-    return {'omega': omega, 'X_L': X_L, 'X_C_series': X_C_series, 'X_net': X_net, 'Z_mag': Z_mag, 'phi': phi}
+def compute_impedance(R, L, C, f):
+    ω = 2 * np.pi * f
+    X_L = ω * L
+    X_C = 1 / (ω * C) if C > 0 else 0
+    X = X_L - X_C
+    Z = np.sqrt(R**2 + X**2)
+    φ = np.arctan2(X, R)
+    return ω, X_L, X_C, X, Z, φ
 
-def powers_from_voltage(R, X_net, V_rms):
-    """Given R and X_net for series load at voltage V_rms, compute P, Q, S, PF, I."""
-    Z_sq = R**2 + X_net**2
-    S_apparent = V_rms**2 / np.sqrt(Z_sq)
-    I_rms = V_rms / np.sqrt(Z_sq)
-    P_active = V_rms**2 * R / Z_sq
-    Q_reactive = V_rms**2 * X_net / Z_sq
-    phi = np.arctan2(X_net, R)
-    PF = np.cos(phi)
-    return {'I_rms': I_rms, 'P': P_active, 'Q': Q_reactive, 'S': S_apparent, 'phi': phi, 'PF': PF}
+def power_values(V, R, X):
+    Z_sq = R**2 + X**2
+    I = V / np.sqrt(Z_sq)
+    P = V**2 * R / Z_sq
+    Q = V**2 * X / Z_sq
+    PF = R / np.sqrt(Z_sq)
+    φ = np.arctan2(X, R)
+    return P, Q, I, PF, φ
 
-def classify_load(phi, tol_deg=1.0):
-    """Return string classification based on phase angle (radians)."""
-    deg = np.degrees(phi)
-    if abs(deg) <= tol_deg:
-        return 'Resistive (unity)'
-    elif deg > 0:
-        return f'Inductive (lagging), φ = {deg:.2f}°'
-    else:
-        return f'Capacitive (leading), φ = {deg:.2f}°'
-
-def required_shunt_capacitor(P, phi_initial, PF_target, V_rms, omega):
-    """Compute shunt capacitor value needed for PF correction."""
-    tan1 = np.tan(phi_initial)
-    PF_target = np.clip(PF_target, 0.01, 0.9999)
-    phi_target = np.arccos(PF_target)
-    tan2 = np.tan(phi_target) * np.sign(phi_initial)
-    Qc = P * (tan1 - tan2)
+def capacitor_correction(P, φ_initial, PF_target, V, ω):
+    φ_target = np.arccos(PF_target)
+    Qc = P * (np.tan(φ_initial) - np.tan(φ_target))
     if Qc <= 0:
-        return 0.0, Qc, phi_target
-    C = Qc / (V_rms**2 * omega)
-    return C, Qc, phi_target
+        return 0, 0, φ_target
+    C = Qc / (V**2 * ω)
+    return C, Qc, φ_target
 
-# Streamlit app layout
-st.set_page_config(page_title="Power Factor Improvement Simulator", layout="wide")
-st.title("Smart Power Factor Improvement & Load Analysis Simulator")
+st.set_page_config(page_title="Power Factor Correction", layout="wide")
+st.title("Power Factor Improvement Simulator")
 
 with st.sidebar:
     st.header("Inputs")
-    V_rms = st.number_input("Supply RMS Voltage (V)", value=230.0, min_value=1.0)
-    f = st.number_input("Frequency (Hz)", value=50.0, min_value=1.0)
-    R = st.number_input("Resistance R (Ω)", value=10.0, min_value=0.0)
-    L = st.number_input("Inductance L (H)", value=0.05, min_value=0.0)
-    C_series = st.number_input("Series Capacitance C (F)", value=0.0, min_value=0.0, format="%.6f")
-    pf_target = st.slider("Target Power Factor", 0.7, 0.999, 0.95, 0.01)
-    st.markdown("---")
+    V = st.number_input("Supply Voltage (V)", 230.0)
+    f = st.number_input("Frequency (Hz)", 50.0)
+    R = st.number_input("Resistance R (Ω)", 10.0)
+    L = st.number_input("Inductance L (H)", 0.05)
+    C = st.number_input("Series Capacitance C (F)", 0.0, format="%.6f")
+    PF_target = st.slider("Target Power Factor", 0.7, 0.999, 0.95, 0.01)
 
-imp = compute_series_impedance(R, L, C_series, f)
-pw = powers_from_voltage(R, imp['X_net'], V_rms)
-classification = classify_load(imp['phi'])
-C_shunt, Qc_required, phi_target = required_shunt_capacitor(pw['P'], imp['phi'], pf_target, V_rms, imp['omega'])
-C_shunt_uF = C_shunt * 1e6
+ω, X_L, X_C, X, Z, φ = compute_impedance(R, L, C, f)
+P, Q, I, PF, φ = power_values(V, R, X)
+C_shunt, Qc, φ_target = capacitor_correction(P, φ, PF_target, V, ω)
 
-st.subheader("Results")
+st.subheader("Results Summary")
 col1, col2 = st.columns(2)
 with col1:
-    st.markdown("**Load / Impedance Details**")
-    st.write(f"R = {R:.4g} Ω")
-    st.write(f"L = {L:.6g} H → X_L = {imp['X_L']:.4f} Ω")
-    if C_series > 0:
-        st.write(f"Series C = {C_series:.6g} F → X_C = {imp['X_C_series']:.4f} Ω")
-    st.write(f"Net Reactance X = {imp['X_net']:.4f} Ω")
-    st.write(f"|Z| = {imp['Z_mag']:.4f} Ω")
-    st.write(f"Phase angle φ = {np.degrees(imp['phi']):.3f}°")
+    st.markdown("**Circuit Parameters**")
+    st.write(f"R = {R:.3f} Ω, L = {L:.4f} H, C = {C:.6f} F")
+    st.write(f"X_L = {X_L:.3f} Ω, X_C = {X_C:.3f} Ω, X_net = {X:.3f} Ω")
+    st.write(f"|Z| = {Z:.3f} Ω,  φ = {np.degrees(φ):.2f}°")
 
 with col2:
-    st.markdown("**Power Quantities**")
-    st.write(f"Current I = {pw['I_rms']:.6f} A")
-    st.write(f"Active Power P = {pw['P']:.6f} W")
-    st.write(f"Reactive Power Q = {pw['Q']:.6f} VAR")
-    st.write(f"Apparent Power |S| = {pw['S']:.6f} VA")
-    st.write(f"Power Factor = {pw['PF']:.6f}")
-    st.write(f"Load Classification: **{classification}**")
+    st.markdown("**Power Values**")
+    st.write(f"P = {P:.3f} W,  Q = {Q:.3f} VAR")
+    st.write(f"I = {I:.4f} A,  PF = {PF:.4f}")
 
-st.subheader("Capacitor Suggestion (Shunt Correction)")
-if C_shunt <= 0:
-    st.info("No capacitor required (PF already near target or cannot be corrected by adding capacitance).")
-else:
-    st.success(f"Add shunt capacitor: **C = {C_shunt_uF:.3f} µF** (Qc = {Qc_required:.3f} VAR)")
-    st.write(f"Target PF angle = {np.degrees(phi_target):.2f}°")
-
+st.markdown("---")
 st.subheader("Power Triangle Visualization")
 
-# Create two side-by-side columns
 col1, col2 = st.columns(2)
 
-# ---------- Power Triangle (Before Correction) ----------
 with col1:
     fig1, ax1 = plt.subplots(figsize=(4, 4))
-    P, Q = pw['P'], pw['Q']
-
-    # Draw the triangle
-    ax1.plot([0, P], [0, 0], 'k-', linewidth=3)        # Base (P)
-    ax1.plot([P, P], [0, Q], 'k-', linewidth=3)        # Vertical (Q)
-    ax1.plot([0, P], [0, Q], 'k--', linewidth=2)       # Hypotenuse (S)
-
-    # Labels
-    ax1.text(P / 2, -0.05 * abs(Q + 1), f"P = {P:.2f} W", ha='center', fontsize=9, color='blue')
-    ax1.text(P + 0.02 * abs(P), Q / 2, f"Q = {Q:.2f} VAR", va='center', fontsize=9, color='red')
-
-    # Format
-    ax1.set_aspect('equal', 'box')
-    ax1.set_xlabel('Active Power (W)')
-    ax1.set_ylabel('Reactive Power (VAR)')
-    ax1.set_title('Power Triangle (Before Correction)')
+    ax1.plot([0, P], [0, 0], 'k-', lw=3)
+    ax1.plot([P, P], [0, Q], 'k-', lw=3)
+    ax1.plot([0, P], [0, Q], 'k--', lw=2)
+    ax1.text(P/2, -0.1*abs(Q), f"P={P:.2f}", color='blue', ha='center')
+    ax1.text(P, Q/2, f"Q={Q:.2f}", color='red', va='center')
+    ax1.set_title("Before Correction")
+    ax1.set_xlabel("Active Power (W)")
+    ax1.set_ylabel("Reactive Power (VAR)")
     ax1.grid(True)
-    ax1.set_xlim(0, max(P * 1.3, 1))
-    ax1.set_ylim(0, max(Q * 1.3, 1))
     st.pyplot(fig1)
 
-
-# ---------- Power Triangle (After Correction) ----------
 with col2:
     if C_shunt > 0:
-        Q_after = Q - Qc_required
+        Q_new = Q - Qc
         fig2, ax2 = plt.subplots(figsize=(4, 4))
-
-        # Draw the triangle
-        ax2.plot([0, P], [0, 0], 'k-', linewidth=3)          # Base (P)
-        ax2.plot([P, P], [0, Q_after], 'k-', linewidth=3)    # Vertical (Q_after)
-        ax2.plot([0, P], [0, Q_after], 'k--', linewidth=2)   # Hypotenuse (S_after)
-
-        # Labels
-        ax2.text(P / 2, -0.05 * abs(Q_after + 1), f"P = {P:.2f} W", ha='center', fontsize=9, color='blue')
-        ax2.text(P + 0.02 * abs(P), Q_after / 2, f"Q = {Q_after:.2f} VAR", va='center', fontsize=9, color='red')
-
-        # Format
-        ax2.set_aspect('equal', 'box')
-        ax2.set_xlabel('Active Power (W)')
-        ax2.set_ylabel('Reactive Power (VAR)')
-        ax2.set_title('Power Triangle (After Correction)')
+        ax2.plot([0, P], [0, 0], 'k-', lw=3)
+        ax2.plot([P, P], [0, Q_new], 'k-', lw=3)
+        ax2.plot([0, P], [0, Q_new], 'k--', lw=2)
+        ax2.text(P/2, -0.1*abs(Q_new), f"P={P:.2f}", color='blue', ha='center')
+        ax2.text(P, Q_new/2, f"Q={Q_new:.2f}", color='red', va='center')
+        ax2.set_title("After Correction")
+        ax2.set_xlabel("Active Power (W)")
+        ax2.set_ylabel("Reactive Power (VAR)")
         ax2.grid(True)
-        ax2.set_xlim(0, max(P * 1.3, 1))
-        ax2.set_ylim(0, max(max(Q, Q_after) * 1.3, 1))
         st.pyplot(fig2)
     else:
-        st.info("No capacitor correction applied — only before-correction triangle shown.")
+        st.info("No correction needed — PF already near target.")
 
-st.subheader("Summary Table")
-before = {'PF': pw['PF'], 'P (W)': pw['P'], 'Q (VAR)': pw['Q'], 'I (A)': pw['I_rms'], 'φ (deg)': np.degrees(pw['phi'])}
+st.subheader("Capacitor Suggestion")
 if C_shunt > 0:
-    after = {'PF': np.cos(phi_target), 'P (W)': pw['P'], 'Q (VAR)': pw['Q'] - Qc_required,
-             'I (A)': pw['I_rms'], 'φ (deg)': np.degrees(phi_target)}
-    df = pd.DataFrame({'Before': before, 'After': after})
+    st.success(f"Add capacitor: **C = {C_shunt*1e6:.3f} µF**, Qc = {Qc:.3f} VAR")
 else:
-    df = pd.DataFrame({'Before': before})
+    st.info("No capacitor required.")
+
+data = {
+    "Before": {"PF": PF, "P (W)": P, "Q (VAR)": Q, "φ (deg)": np.degrees(φ)},
+}
+if C_shunt > 0:
+    data["After"] = {"PF": np.cos(φ_target), "P (W)": P, "Q (VAR)": Q - Qc, "φ (deg)": np.degrees(φ_target)}
+
+df = pd.DataFrame(data)
 st.dataframe(df.T)
-st.markdown("---")
